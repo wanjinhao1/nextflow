@@ -377,15 +377,15 @@ class AgentRpcBrokerTest extends Specification {
     }
 
     def 'should reject a connect frame once the capability timeout has elapsed'() {
-        given: 'a capability that expires in a second, and a much longer per-request LLM timeout'
-        broker = rebuild([capabilityTimeout: '1s'])
+        given: 'a capability that expires in a tenth of a second, and a much longer per-request LLM timeout'
+        broker = rebuild([capabilityTimeout: '100ms'])
         // requestTimeoutSeconds is deliberately large: the pre-connect budget must come from
         // `agent.rpc.capabilityTimeout` ALONE. Under the previous max(requestTimeout,30)+60 rule
         // this capability would still be valid for another hour.
         def registration = broker.register(new AgentRunnerRequest(model: 'openai/test', requestTimeoutSeconds: 3600), false)
 
         when:
-        sleep(1_500)
+        awaitDrained()
         def frames = connect(registration.endpoint)
         frames.send([type: 'connect', invocationId: registration.invocationId, token: registration.token])
 
@@ -394,8 +394,8 @@ class AgentRpcBrokerTest extends Specification {
     }
 
     def 'should not put a connected stream on the capability clock'() {
-        given: 'a capability that expires in a second, consumed immediately'
-        broker = rebuild([capabilityTimeout: '1s'])
+        given: 'a capability that expires in half a second, consumed immediately'
+        broker = rebuild([capabilityTimeout: '500ms'])
         def request = new AgentRunnerRequest(
             model: 'openai/test',
             maxIterations: 5,
@@ -408,7 +408,7 @@ class AgentRpcBrokerTest extends Specification {
         frames.next()
 
         when: 'the live stream outlives the capability timeout'
-        sleep(1_500)
+        sleep(700)
         frames.send([
             type: 'tool_call',
             invocationId: registration.invocationId,
@@ -469,11 +469,11 @@ class AgentRpcBrokerTest extends Specification {
 
     def 'should tell an expired capability apart from an identity it never issued'() {
         given: 'a capability whose task takes longer to start than the budget allows'
-        broker = rebuild([capabilityTimeout: '1s'])
+        broker = rebuild([capabilityTimeout: '100ms'])
         def registration = broker.register(new AgentRunnerRequest(model: 'openai/test', requestTimeoutSeconds: 3600), false)
 
         when: 'the proxy finally dials back'
-        sleep(1_500)
+        awaitDrained()
         def frames = connect(registration.endpoint)
         frames.send([type: 'connect', invocationId: registration.invocationId, token: registration.token])
         def expired = frames.error()
@@ -488,7 +488,7 @@ class AgentRpcBrokerTest extends Specification {
 
         and: 'the deadline that fired left evidence, naming the invocation and the budget'
         // it used to fire silently -- `{ invocations.remove(id, invocation) }` and nothing else
-        warnings().any { it.contains(registration.invocationId) && it.contains('expired after 1s') }
+        warnings().any { it.contains(registration.invocationId) && it.contains('expired after 100ms') }
 
         when: 'an identity the broker never issued is presented'
         def unknown = connect(registration.endpoint)
@@ -552,7 +552,7 @@ class AgentRpcBrokerTest extends Specification {
 
     def 'should still name the consumed cause after a mass lapse of other capabilities'() {
         given: 'a budget long enough to connect within, and short enough that later capabilities lapse'
-        broker = rebuild([capabilityTimeout: '2s'])
+        broker = rebuild([capabilityTimeout: '500ms'])
         def registration = broker.register(new AgentRunnerRequest(model: 'openai/test', requestTimeoutSeconds: 30), false)
         def first = connect(registration.endpoint)
         first.send([type: 'connect', invocationId: registration.invocationId, token: registration.token])

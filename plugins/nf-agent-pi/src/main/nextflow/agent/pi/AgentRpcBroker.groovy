@@ -47,6 +47,7 @@ import nextflow.agent.rpc.AgentRpcConfig
 import nextflow.agent.rpc.AgentRpcHost
 import nextflow.agent.rpc.AgentRpcRegistration
 import nextflow.agent.AgentRunnerRequest
+import nextflow.util.Duration
 
 /**
  * Embedded, driver-side broker for canonical agent tasks.
@@ -176,7 +177,7 @@ class AgentRpcBroker {
      * message {@link #register} raises verbatim. @see AgentRunnerRequest#brokerHost
      */
     private final AgentRpcHost fallbackHost
-    private final long capabilitySeconds
+    private final Duration capabilityTimeout
     /** SHA-256 of the served certificate, lowercase hex; {@code null} when TLS is disabled. */
     private final String fingerprint
     /** Whether the broker deliberately serves cleartext, i.e. {@code agent.rpc.tls = false}. */
@@ -317,7 +318,7 @@ class AgentRpcBroker {
         // Explicitly null-checked, not Elvis: nextflow.util.Duration is falsy at zero, so `?:` would
         // silently widen `agent.rpc.capabilityTimeout = '0s'` -- the tightest window an operator can
         // ask for -- into the one-hour default, the wrong direction for a security-relevant knob.
-        this.capabilitySeconds = (config.capabilityTimeout != null ? config.capabilityTimeout : AgentRpcConfig.DEFAULT_CAPABILITY_TIMEOUT).seconds
+        this.capabilityTimeout = config.capabilityTimeout != null ? config.capabilityTimeout : AgentRpcConfig.DEFAULT_CAPABILITY_TIMEOUT
         this.insecureTransport = !config.tlsEnabled()
         final ServerBuilder<?> builder = ServerBuilder.forPort(requestedPort)
         builder.addService(service())
@@ -446,7 +447,7 @@ class AgentRpcBroker {
         if( pending )
             parts << "${capabilityCount(pending)} registered but never consumed".toString()
         if( lapsed )
-            parts << "${capabilityCount(lapsed)} that lapsed on the ${capabilitySeconds}s `agent.rpc.capabilityTimeout`".toString()
+            parts << "${capabilityCount(lapsed)} that lapsed on the ${capabilityTimeout} `agent.rpc.capabilityTimeout`".toString()
         log.warn "Agent RPC broker shut down with ${parts.join(' and ')} - a capability is minted while the task script is generated, which happens before `storeDir` and the resume cache are consulted, so an agent task that turns out to be a cache hit leaves one behind holding its request, hence that task's resolved inputs, until the run ends or the budget elapses"
     }
 
@@ -508,7 +509,7 @@ class AgentRpcBroker {
         //
         // So the retention stands, bounded by min(capabilityTimeout, run lifetime) -- close() clears
         // the map -- and reportRetention() makes it countable instead of silent.
-        invocation.expiry = expiryPool.schedule({ lapse(id, invocation) } as Runnable, capabilitySeconds, TimeUnit.SECONDS)
+        invocation.expiry = expiryPool.schedule({ lapse(id, invocation) } as Runnable, capabilityTimeout.millis, TimeUnit.MILLISECONDS)
         // The consumer can only cancel a deadline it can see, and it may have connected -- or the
         // deadline may already have fired, at a capabilityTimeout of zero -- while this one was
         // being armed. Absence from the map is exactly "no longer pending", so re-check and cancel
@@ -552,7 +553,7 @@ class AgentRpcBroker {
         if( !invocations.remove(id, invocation) )
             return
         outcomes.put(id, Outcome.EXPIRED)
-        final message = "Agent RPC capability ${id} expired after ${capabilitySeconds}s without a connection - the agent task never dialled back within `agent.rpc.capabilityTimeout`"
+        final message = "Agent RPC capability ${id} expired after ${capabilityTimeout} without a connection - the agent task never dialled back within `agent.rpc.capabilityTimeout`"
         // A wide fan-out lapses en masse (a tightened budget, or a run that outlives its queue), and
         // one line per task would bury the run's real errors. The first few carry the diagnosis; the
         // aggregate in reportRetention() carries the true total whatever this cap swallows.
@@ -771,8 +772,8 @@ class AgentRpcBroker {
     private void reject(ResponseSink sink, String id, Outcome outcome) {
         String detail
         if( outcome == Outcome.EXPIRED ) {
-            detail = "Agent RPC invocation capability expired after ${capabilitySeconds}s while the task waited to start - raise `agent.rpc.capabilityTimeout` above the executor's queueing delay".toString()
-            log.warn "Rejected agent RPC connection with a capability that expired after ${capabilitySeconds}s (invocationId=${id})"
+            detail = "Agent RPC invocation capability expired after ${capabilityTimeout} while the task waited to start - raise `agent.rpc.capabilityTimeout` above the executor's queueing delay".toString()
+            log.warn "Rejected agent RPC connection with a capability that expired after ${capabilityTimeout} (invocationId=${id})"
         }
         else if( outcome == Outcome.CONSUMED ) {
             // Named cause first, replay second, and on purpose. TaskProcessor re-submits a
